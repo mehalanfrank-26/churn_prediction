@@ -1,0 +1,469 @@
+import numpy as np
+import pandas as pd
+
+import plotly.express as px
+import plotly.graph_objects as go
+import plotly.io as pio
+from plotly.offline import init_notebook_mode
+
+from sklearn.impute import SimpleImputer
+from sklearn.calibration import LabelEncoder
+
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.feature_selection import chi2, VarianceThreshold
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    classification_report,
+    roc_auc_score,
+    f1_score,
+    roc_curve,
+)
+
+from sklearn.model_selection import GridSearchCV, train_test_split, StratifiedKFold
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.naive_bayes import GaussianNB, BernoulliNB
+
+from xgboost import XGBClassifier
+
+from imblearn.over_sampling import ADASYN
+from imblearn.pipeline import Pipeline
+
+from keras.models import Sequential  # type: ignore
+from keras.layers import Dense, Dropout  # type: ignore
+
+from scikeras.wrappers import KerasClassifier
+
+from collections import Counter
+import warnings
+
+import pickle
+
+warnings.filterwarnings(action="ignore")
+pio.templates.default = "none"
+pio.renderers.default = "notebook_connected"
+init_notebook_mode(connected=False)
+
+data = pd.read_csv("WA_Fn-UseC_-Telco-Customer-Churn.csv")
+data.head()
+data.info(memory_usage="deep")
+data.isna().sum()
+categorical_cols = [col for col in data.columns.values if data[col].dtype == "object"]
+for col in categorical_cols:
+    print(f"{col:>20s} : {data[col].nunique()} unique values")
+print(
+    f"Total columns : {data.shape[1]}\nTotal categorical columns :{len(categorical_cols)}"
+)
+data.drop(["customerID"], axis=1, inplace=True)
+data["TotalCharges"].nunique()
+data["TotalCharges"].head()
+data["TotalCharges"] = pd.to_numeric(data["TotalCharges"], errors="coerce")
+data["TotalCharges"].isna().sum()
+fig = px.histogram(
+    x=data["TotalCharges"],
+    title="Total Charges Distribution",
+    width=600,
+    height=600,
+)  # type: ignore
+fig.update_layout(bargap=0.1)
+fig.show()
+fig = px.histogram(
+    x = data["TotalCharges"],
+    title = "Total Charges",
+    height = 600,
+    width = 600,
+)
+fig.update_layout(bargap = 0.2)
+fig.show()
+
+imputer = SimpleImputer(strategy="mean")
+data["TotalCharges"] = imputer.fit_transform(X=data[["TotalCharges"]])
+
+data["TotalCharges"].isna().sum()
+
+categorical_cols = [col for col in data.columns.values if data[col].dtype == "object"]
+integer_col = [
+    col
+    for col in data.columns.values
+    if data[col].dtype == "int64" or data[col].dtype == "float64"
+]
+
+from plotly.subplots import make_subplots
+
+fig = make_subplots(
+    rows=(len(categorical_cols) // 4), cols=4, subplot_titles=categorical_cols
+)
+
+for i, col in enumerate(categorical_cols):
+    temp_df = data[col].value_counts().reset_index()
+    total_count = temp_df["count"].sum()
+    temp_df["pct"] = temp_df["count"] / total_count * 100
+
+    fig.add_trace(
+        trace=go.Bar(
+            x=temp_df[col],
+            y=temp_df["count"],
+            text=temp_df[["count", "pct"]].apply(
+                lambda x: f"{x[0]:,.0f}<br>({x[1]:.1f}%)", axis=1
+            ),
+        ),
+        row=(i // 4) + 1,
+        col=(i % 4) + 1,
+    )
+
+
+fig.update_layout(height=1000)
+fig.update_traces(showlegend=False)
+fig.show()
+
+temp_df = data["SeniorCitizen"].value_counts().reset_index()
+temp_df["Percentage"] = temp_df["count"] / temp_df["count"].sum()
+temp_df
+
+fig = px.histogram(data["tenure"], title="Tenure", text_auto=True, marginal="box")
+fig.update_layout(bargap=0.2)
+fig.update_traces(showlegend=False)
+fig.show()
+
+fig = px.histogram(
+    data["MonthlyCharges"], title="MonthlyCharges", text_auto=True, marginal="box"
+)
+fig.update_layout(bargap=0.2)
+fig.update_traces(showlegend=False)
+fig.show()
+
+fig = px.histogram(
+    data["TotalCharges"], title="TotalCharges", text_auto=True, marginal="box"
+)
+fig.update_layout(bargap=0.2)
+fig.update_traces(showlegend=False)
+fig.show()
+
+fig = px.box(
+    x=data["TotalCharges"],
+    color=data["Churn"],
+    title="Total Charges and Churn",
+    points="all",
+)
+fig.update_layout(height=700, boxgroupgap=0.5)
+fig.show()
+
+categorical_cols = [col for col in data.columns.values if data[col].dtype == "object"]
+for col in categorical_cols:
+    print(f"{col:>20s} : {data[col].dtype}")
+print(
+    f"Total columns : {data.shape[1]}\nTotal categorical columns :{len(categorical_cols)}"
+)
+
+unique_cat_values = pd.DataFrame(columns=["Name", "Values", "No of Uniques"])
+
+for col in categorical_cols:
+    unique_cat_values = pd.concat(
+        [
+            unique_cat_values,
+            pd.DataFrame(
+                {
+                    "Name": col,
+                    "Values": [data[col].unique()],
+                    "No of Uniques": data[col].nunique(),
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+unique_cat_values.set_index("Name")
+
+encoding_class = pd.DataFrame(columns=["Name", "Actual", "Encoded"])
+for col in categorical_cols:
+    encoder = LabelEncoder()
+    encoder.fit(data[col])
+    encoding_dict = dict(zip(encoder.classes_, encoder.transform(encoder.classes_)))  # type: ignore
+    data[col] = encoder.transform(data[col])
+    encoding_class = pd.concat(
+        [
+            encoding_class,
+            pd.DataFrame(
+                {
+                    "Name": col,
+                    "Actual": [encoding_dict.keys()],
+                    "Encoded": [encoding_dict.values()],
+                }
+            ),
+        ]
+    )
+encoding_class.set_index("Name")
+
+duplicated_data = data[data.duplicated()]
+
+print(f"Total no of rows : {data.shape[0]}")
+print(f"No of duplicated rows is {duplicated_data.shape[0]}")
+print(
+    f"The percentage of Duplicated values : {round((duplicated_data.shape[0] / data.shape[0]) * 100, 2)}%"
+)
+data = data.drop_duplicates()
+print(f"The no of rows after removing duplicates : {data.shape[0]}")
+
+data_transpose = data.T
+data_transpose[data_transpose.duplicated()]
+old_data = data.copy()
+
+scaler = MinMaxScaler()
+
+
+data.loc[:, ["MonthlyCharges", "TotalCharges"]] = scaler.fit_transform(
+    data.loc[:, ["MonthlyCharges", "TotalCharges"]]
+)
+data.loc[:, ["tenure"]] = scaler_1.fit_transform(data.loc[:, ["tenure"]])
+
+constant_features = [col for col in data.columns if data[col].std() == 0]
+constant_features
+
+var_threshold = VarianceThreshold(
+    threshold=0.01
+)  ## Remove feature that shows the same value for 99%
+var_threshold.fit(data)
+
+if data.shape[1] == sum(var_threshold.get_support()):
+    print(f"No feature contains quasi constant")
+else:
+    quasi_constant = [
+        col
+        for col in data.columns
+        if col not in data.columns[var_threshold.get_support()]
+    ]
+    print(quasi_constant)
+    
+fig = px.imshow(
+round(data.corr(), 2),
+text_auto=True,
+title="Correlation Matrix",
+height=800,
+width=800,
+)
+fig.show()
+
+data = data.drop("tenure", axis=1)
+integer_col.remove("tenure")
+integer_col.remove("tenure")
+
+chi2_stats, p_values = chi2(
+    data[categorical_cols].drop("Churn", axis=1), y=data["Churn"]
+)
+chi2_summary = pd.DataFrame(
+    {
+        "Column": data[categorical_cols].drop("Churn", axis=1).columns,
+        "Chi2": chi2_stats,
+        "p_value": p_values,
+    },
+)
+chi2_summary
+p_value_threshold = (
+    chi2_summary[chi2_summary["p_value"] > 0.05]["Column"]
+    .reset_index(drop=True)
+    .tolist()
+)
+print(p_value_threshold)
+
+f_value_threshold = (
+    chi2_summary[chi2_summary["Chi2"] < 9]["Column"].reset_index(drop=True).tolist()
+)
+print(f_value_threshold)
+
+x_train, x_test, y_train, y_test = train_test_split(
+    x, y, test_size=0.2, random_state=42, stratify=y
+)
+
+
+models = [
+    ("Logistic Classification", LogisticRegression(max_iter=1000)),
+    ("Support Vector Classifier", SVC(kernel="rbf")),
+    ("Decision Tree Classifier", DecisionTreeClassifier()),
+    ("Random Forest Classifier", RandomForestClassifier()),
+    ("K Nearest Neighbor", KNeighborsClassifier()),
+    ("Gaussian Naive Bayes", GaussianNB()),
+    ("Bernoulli Naive Bayes", BernoulliNB()),
+    ("AdaBoost Classifier", AdaBoostClassifier()),
+    ("XGBoost Classifier", XGBClassifier()),
+]
+
+score = []
+model_name = []
+for name, model in models:
+    classifier = model.fit(x_train, y_train)
+    y_pred = classifier.predict(x_test)
+    score.append(accuracy_score(y_test, y_pred))
+    model_name.append(name)
+
+    # Calculate AUC and F1-score
+    auc = roc_auc_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+
+    # Append them to the score list
+    score.append(auc)
+    score.append(f1)
+
+# Create DataFrame with additional columns
+summary = pd.DataFrame(
+    {
+        "Model Name": model_name,
+        "Accuracy": score[0::3],
+        "AUC-ROC": score[1::3],
+        "F1-Score": score[2::3],
+    }
+)
+
+# Sort by Original Accuracy in descending order
+summary = summary.sort_values(by="Accuracy", ascending=False)
+
+summary
+skfold_score = []
+skf = StratifiedKFold(n_splits=10)
+
+for train_index, test_index in skf.split(x, y):
+    rfc = RandomForestClassifier()
+
+    x_train_fold, x_test_fold = x.iloc[train_index, :], x.iloc[test_index, :]
+
+    y_train_fold, y_test_fold = y.iloc[train_index], y.iloc[test_index]
+    rfc.fit(x_train_fold, y_train_fold)
+
+    y_pred_fold = rfc.predict(x_test_fold)
+
+    accuracy = accuracy_score(y_test_fold, y_pred_fold)
+
+    skfold_score.append(accuracy)
+    
+print(f"The Scores are {skfold_score}")
+print(f"The Best Accuracy : {max(skfold_score)}")
+print(f"The Worse Accuracy : {min(skfold_score)}")
+
+forest_parameter = {
+    "n_estimators": [200, 250, 300, 500],  # Number of trees
+    # Minimum samples for leaf node  # Maximum features considered at each split
+    "criterion": ["gini", "entropy"],
+    "bootstrap": [True],
+    "n_jobs": [-1],
+}
+
+
+temp_rfc = RandomForestClassifier()
+
+grid_search = GridSearchCV(temp_rfc, forest_parameter, scoring="accuracy", verbose=3)
+grid_search.fit(x_train, y_train)
+
+def build_model():
+    neural_model = Sequential()
+    neural_model.add(
+        Dense(
+            units=10,
+            kernel_initializer="uniform",
+            activation="relu",
+            input_shape=(18,),
+        )
+    )
+    neural_model.add(Dropout(0.1))
+    neural_model.add(Dense(units=10, kernel_initializer="uniform", activation="relu"))
+    neural_model.add(Dropout(0.1))
+    neural_model.add(Dense(units=1, kernel_initializer="uniform", activation="sigmoid"))
+    neural_model.compile(
+        optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"]
+    )
+    return neural_model
+
+nn_model = KerasClassifier(
+    build_fn=build_model,
+    epochs=10,
+)  # Set default epochs (optional)
+
+nn_param_grid = {
+    "epochs": [75],  # Number of epochs to train
+    "batch_size": [20, 50],  # Batch size for training
+    "optimizer": ["adam", "rmsprop"],  # Optimizers to try
+}
+
+grid_search = GridSearchCV(
+    estimator=nn_model, param_grid=nn_param_grid, cv=5, verbose=3, error_score="raise"
+)  # 5-fold cross-validation
+
+grid_search.fit(x_train, y_train)  ## Training neural network with different parameters
+final_random_forest = RandomForestClassifier(
+    bootstrap=True, criterion="gini", n_estimators=300, n_jobs=-1
+)
+final_random_forest.fit(x_train, y_train)
+y_pred = final_random_forest.predict(x_test)
+cm = confusion_matrix(y_true=y_test, y_pred=y_pred)
+fig = px.imshow(
+    cm,
+    text_auto=True,
+    title="Confusion Matrix",
+    color_continuous_scale=px.colors.sequential.Purples,
+)
+fig.update_layout(
+    xaxis_title="Predicted Value", yaxis_title="Actual Value", height=500, width=500
+)
+fig.show()
+
+print(classification_report(y_test, y_pred))
+
+y_pred_proba = final_random_forest.predict_proba(x_test)[:, 1]
+fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+auc = roc_auc_score(y_test, y_pred_proba)
+
+fig = px.line(x=fpr, y=tpr)
+fig.update_layout(width=700, height=500, title=f"AUC - ROC Curve")
+fig.update_layout(
+    xaxis_title=f"False Positive Rate     AUC_Score={round(auc, 3)}",
+    yaxis_title="True Positive Rate",
+)
+fig.update_xaxes(range=[-0.1, 1], constrain="domain", zeroline=False, showgrid=False)
+fig.update_yaxes(scaleanchor="x", scaleratio=1, zeroline=False, showgrid=False)
+fig.show()
+
+feature_importance = (
+    pd.DataFrame(
+        {
+            "Feature": x_train.columns.values,
+            "Importance": [
+                round(x, 2) for x in final_random_forest.feature_importances_
+            ],
+        }
+    )
+    .sort_values(by="Importance", ascending=False)
+    .reset_index(drop=True)
+)
+feature_importance
+
+prediction_df = pd.DataFrame(
+    {
+        "gender": 0,
+        "SeniorCitizen": 0,  # 1 for SeniorCitizen
+        "Partner": 1,
+        "Dependents": 1,
+        "PhoneService": 1,
+        "MultipleLines": 0,
+        "InternetService": 0,
+        "OnlineSecurity": 0,
+        "OnlineBackup": 2,
+        "DeviceProtection": 0,
+        "TechSupport": 2,
+        "StreamingTV": 0,
+        "StreamingMovies": 0,
+        "Contract": 0,
+        "PaperlessBilling": 0,
+        "PaymentMethod": 2,
+        "MonthlyCharges": pd.NA,  # Monthly charges 18-118
+        "TotalCharges": pd.NA,  # Total Charges 18 - 8700
+    },
+    index=[0],
+)
+# For all the other values refer the above output
+prediction_df.loc[:, ["MonthlyCharges", "TotalCharges"]] = scaler.transform(
+    pd.DataFrame({"MonthlyCharges": 50, "TotalCharges": 4000}, index=[0])
+)
+print(
+    f"{'Customer stays' if final_random_forest.predict(prediction_df)[0]==1 else 'Customer leaves'}\nOutput: {final_random_forest.predict(prediction_df)[0]}"
+)
